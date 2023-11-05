@@ -1,7 +1,17 @@
 const express = require('express');
 const axios = require('axios');
+const rateLimit = require('express-rate-limit')
 const app = express();
 
+const userIdlimiter = rateLimit({
+  windowMs: 60*1000,
+  max: 5
+})
+
+app.use(userIdlimiter)
+
+
+//負數和1~1000之外需考慮進去
 app.get('/data', async (req, res) => {
   try {
     const userId = req.query.user;
