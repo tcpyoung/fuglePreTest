@@ -6,7 +6,7 @@ const { ipLimiter, userIdlimiter, ipRequestCounter, userRequestCounter } = requi
 const redis = new Redis('redis://127.0.0.1:6379');
 const app = express();
 
-const server = new WebSocket.Server({ port: 443 });
+const server = new WebSocket.Server({path: '/streaming', port: 443 });
 const bitstampWebSocket = new WebSocket('wss://ws.bitstamp.net');
 
 app.use(ipLimiter)
