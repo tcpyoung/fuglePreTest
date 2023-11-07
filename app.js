@@ -15,6 +15,11 @@ app.get('/data', userIdlimiter, async (req, res) => {
   try {
     const userId = req.query.user;
 
+    if (isNaN(userId) || userId < 1 || userId > 1000) {
+      res.status(400).send('Invalid user ID');
+      return;
+    }
+    
     const response = await axios.get('https://hacker-news.firebaseio.com/v0/topstories.json?print=pretty');
     const data = response.data;
     const result = data.filter((number) => number % userId === 0);
