@@ -3,6 +3,7 @@ const axios = require('axios');
 const WebSocket = require('ws');
 const Redis = require('ioredis');
 const { ipLimiter, userIdlimiter, ipRequestCounter, userRequestCounter } = require('./middleware/rateLimit');
+const redis = new Redis('redis://127.0.0.1:6379');
 const app = express();
 
 const server = new WebSocket.Server({ port: 443 });
@@ -31,24 +32,28 @@ app.get('/data', userIdlimiter, async (req, res) => {
 
 });
 
-// redis
-const redis = new Redis('redis://127.0.0.1:6379');
+
 
 const userSubscriptions = {};
 
 //測試訂閱
 server.on('connection', (ws) => {
-
+  
   console.log('Client connected')
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      console.log(data.currencyPair)
       if (data.action === 'subscribe') {
         console.log('subscribe')
-        subscribeToCurrencyPair(ws, data.currencyPair);
+        for (const pair of data.currencyPair){
+          console.log(pair)
+          subscribeToCurrencyPair(ws, pair);
+        }     
       } else if (data.action === 'unsubscribe') {
-        unsubscribeFromCurrencyPair(ws, data.currencyPair);
+        for (const pair of data.currencyPair){
+          console.log(pair)
+          unsubscribeFromCurrencyPair(ws, pair);
+        }     
       }
     } catch (error) {
       console.log(error)
@@ -56,13 +61,14 @@ server.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    unsubscribeAllFromUser(ws);
+    console.log('close')
   });
 });
 
 function subscribeToCurrencyPair(ws, currencyPair) {
   if (!userSubscriptions[ws]) {
     userSubscriptions[ws] = [];
+    console.log(userSubscriptions)
   }
   if (!userSubscriptions[ws].includes(currencyPair)) {
     userSubscriptions[ws].push(currencyPair);
@@ -73,35 +79,13 @@ function subscribeToCurrencyPair(ws, currencyPair) {
         channel: `live_trades_${currencyPair}`,
       },
     };
-
+    bitstampWebSocket.send(JSON.stringify(subscribeMsg));
+    console.log(`Send to bitstamp message`)
     
     console.log(`Subscribed to ${currencyPair}`);
   }
 }
 
-//測試 Bitstamp websocket API
-bitstampWebSocket.on('open', () => {
-  console.log('Connected to Bitstamp WebSocket API');
-  const subscribeMsg = JSON.stringify({
-    event: 'bts:subscribe',
-    data: {
-      channel: 'live_trades_btcusd',
-    },
-  });
-  bitstampWebSocket.send(subscribeMsg);
-});
-
-bitstampWebSocket.on('message', (message) => {
-  const data = JSON.parse(message);
-
-  if (data.event === 'trade') {
-    const tradeData = data.data;
-    console.log('Received trade data:', tradeData);
-  }
-});
-bitstampWebSocket.on('close', () => {
-  console.log('Disconnected from Bitstamp WebSocket API');
-});
 function unsubscribeFromCurrencyPair(ws, currencyPair) {
   if (userSubscriptions[ws]) {
     const index = userSubscriptions[ws].indexOf(currencyPair);
@@ -114,12 +98,86 @@ function unsubscribeFromCurrencyPair(ws, currencyPair) {
           channel: `live_trades_${currencyPair}`,
         },
       };
-      ws.send(JSON.stringify(unsubscribeMsg));
+      bitstampWebSocket.send(JSON.stringify(unsubscribeMsg));
 
       console.log(`Unsubscribed from ${currencyPair}`);
     }
   }
 }
+
+//放入相對應的幣種
+app.get('/api/ohlc/:currencyPair', async (req, res) => {
+  const currencyPair = req.params.currencyPair;
+  const ohlcData = await getOHLCData(currencyPair);
+
+  if (ohlcData) {
+    res.json(ohlcData);
+  } else {
+    res.status(404).json({ error: 'OHLC data not found' });
+  }
+});
+
+async function getOHLCData(currencyPair) {
+  const key = `ohlc:${currencyPair}`;
+  const ohlcData = await redis.get(key);
+  if (ohlcData) {
+    console.log(`Redis get the key ${key}`)
+    return JSON.parse(ohlcData);
+  } else {
+
+    //如果有抓到資料就放入redis並設為15分鐘期限
+    const newOHLCData = await fetchOHLCFromBitstamp(currencyPair);
+    if (newOHLCData) {
+      await redis.setex(key, 900, JSON.stringify(newOHLCData));
+      return newOHLCData;
+    }
+    return null;
+  }
+}
+
+async function fetchOHLCFromBitstamp(currencyPair) {
+  try {
+    const url = `https://www.bitstamp.net/api/v2/ohlc/${currencyPair}/?step=60&limit=1`;
+    console.log(url)
+    const response = await axios.get(url);
+    
+    if (response.status === 200) {
+      const ohlcData = response.data.data.ohlc;
+      if (ohlcData && ohlcData.length > 0) {
+        const latestOHLC = ohlcData[0];
+        return {
+          open: latestOHLC.open,
+          high: latestOHLC.high,
+          low: latestOHLC.low,
+          close: latestOHLC.close,
+        };
+      }
+    }
+
+    return null;
+  } catch (error) {
+
+    console.error('Error fetching OHLC data from Bitstamp:', error);
+    return null;
+  }
+}
+
+bitstampWebSocket.on('message', (message) => {
+  const data = JSON.parse(message);
+
+  if (data.event === 'trade') {
+    //回傳資料根據切割channel最後的幣種，方便顯示是哪個幣種的即時價格 
+    //e.g. live_trades_btcusd
+    const channelParts = data.channel.split('_');
+    const currencypairString = channelParts[channelParts.length - 1];
+    const tradeData = data.data; 
+    console.log('Currency pair:', currencypairString);
+    console.log('Received trade data:', tradeData);
+  }
+});
+bitstampWebSocket.on('close', () => {
+  console.log('Disconnected from Bitstamp WebSocket API');
+});
 
 const port = 3000;
 app.listen(port, () => {
