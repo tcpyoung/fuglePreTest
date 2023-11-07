@@ -66,11 +66,13 @@ server.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    console.log('close')
+    //當socket斷掉時，也要同時unsubscribe
+    unsubscribeAllFromUser(ws)
   });
 });
 
 function subscribeToCurrencyPair(ws, currencyPair) {
+  //利用userSubscriptions去紀錄哪些client去subscribe哪些channel
   if (!userSubscriptions[ws]) {
     userSubscriptions[ws] = [];
     console.log(userSubscriptions)
@@ -107,6 +109,25 @@ function unsubscribeFromCurrencyPair(ws, currencyPair) {
 
       console.log(`Unsubscribed from ${currencyPair}`);
     }
+  }
+}
+
+
+function unsubscribeAllFromUser(ws) {
+  if (userSubscriptions[ws]) {
+    for (const currencyPair of userSubscriptions[ws]) {
+      const unsubscribeMsg = {
+        event: 'bts:unsubscribe',
+        data: {
+          channel: `live_trades_${currencyPair}`,
+        },
+      };
+
+      bitstampWebSocket.send(JSON.stringify(unsubscribeMsg));
+
+      console.log(`Unsubscribed from ${currencyPair}`);
+    }
+    delete userSubscriptions[ws];
   }
 }
 
